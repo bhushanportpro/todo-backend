@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "migrate": "node src/migrate.js"
+    "migrate": "node src/migrate.js",
+    "test": "node --check src/server.js && node --check src/db.js && node --check src/migrate.js && node --check src/controllers/todos.controller.js && node --check src/routes/todos.routes.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
