@@ -88,11 +88,13 @@ jobs:
           command_timeout: 10m
           script: |
             set -euo pipefail
-            mkdir -p "$DEPLOY_PATH"
-            cd "$DEPLOY_PATH"
-            printf '%s' "$DOCKERHUB_TOKEN" | sudo -n docker login --username "$DOCKERHUB_USERNAME" --password-stdin
-            export IMAGE="$IMAGE_NAME:$IMAGE_TAG"
-            sudo -n docker pull "$IMAGE"
-            sudo -n docker stack deploy --with-registry-auth --prune --resolve-image always \
-              --compose-file docker-compose.yml "$STACK_NAME"
-            sudo -n docker logout
+            sudo -u dockeruser bash -c '
+              set -euo pipefail
+              mkdir -p "'"$DEPLOY_PATH"'"
+              cd "'"$DEPLOY_PATH"'"
+              printf "%s" "'"$DOCKERHUB_TOKEN"'" | docker login --username "'"$DOCKERHUB_USERNAME"'" --password-stdin
+              export IMAGE="'"$IMAGE_NAME:$IMAGE_TAG"'"
+              docker pull "$IMAGE"
+              docker stack deploy --with-registry-auth --prune --resolve-image always --compose-file docker-compose.yml "'"$STACK_NAME"'"
+              docker logout
+            '
