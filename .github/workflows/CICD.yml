@@ -88,7 +88,7 @@ jobs:
           command_timeout: 10m
           script: |
             set -euo pipefail
-            sudo -u dockeruser bash -c '
+            sudo -u docker bash -c '
               set -euo pipefail
               mkdir -p "'"$DEPLOY_PATH"'"
               cd "'"$DEPLOY_PATH"'"
