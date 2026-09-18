@@ -1,0 +1,86 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      current_image_tag:
+        description: Currently deployed image tag, for example v5.6
+        required: true
+        type: string
+        default: v1.0
+
+env:
+  IMAGE_NAME: bhushanportpro/todo-app-backend
+
+jobs:
+  rollback:
+    name: Deploy selected image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate image tag
+        shell: bash
+        env:
+          CURRENT_IMAGE_TAG: ${{ inputs.current_image_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CURRENT_IMAGE_TAG" =~ ^v[0-9]+([.][0-9]+)?$ ]]; then
+            echo "current_image_tag must match vN or vN.M"
+            exit 1
+          fi
+
+      - name: Determine previous image version
+        id: version
+        shell: bash
+        env:
+          CURRENT_IMAGE_TAG: ${{ inputs.current_image_tag }}
+        run: |
+          set -euo pipefail
+          version="${CURRENT_IMAGE_TAG#v}"
+          major="${version%%.*}"
+          if [[ "$version" == "$major" ]]; then
+            if (( major <= 1 )); then
+              echo "There is no previous release for $CURRENT_IMAGE_TAG"
+              exit 1
+            fi
+            previous_tag="v$((major - 1)).9"
+          else
+            minor="${version#*.}"
+            if (( minor == 0 )); then
+              if (( major <= 1 )); then
+                echo "There is no previous release for $CURRENT_IMAGE_TAG"
+                exit 1
+              fi
+              previous_tag="v$((major - 1)).9"
+            else
+              previous_tag="v${major}.$((minor - 1))"
+            fi
+          fi
+          echo "image_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
+          echo "$CURRENT_IMAGE_TAG will roll back to $previous_tag"
+
+      - name: Pull image and deploy stack on EC2
+        uses: appleboy/ssh-action@v1
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ steps.version.outputs.image_tag }}
+          DEPLOY_PATH: /home/${{ secrets.EC2_USER }}/todo-backend
+          STACK_NAME: todo-backend
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: IMAGE_NAME,IMAGE_TAG,DEPLOY_PATH,STACK_NAME,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
+          timeout: 120s
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            mkdir -p "$DEPLOY_PATH"
+            cd "$DEPLOY_PATH"
+            printf "%s" "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+            export IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+            docker pull "$IMAGE"
+            docker stack deploy --with-registry-auth --prune --resolve-image always --compose-file docker-compose.yml "$STACK_NAME"
+            docker logout
