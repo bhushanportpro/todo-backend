@@ -136,15 +136,21 @@ jobs:
               echo "docker-compose.yml was not found in $DEPLOY_PATH"
               exit 1
             fi
+            deploy_image_name="$IMAGE_NAME"
+            deploy_image_tag="$IMAGE_TAG"
             if [[ -f .env ]]; then
               set -a
               . ./.env
               set +a
             fi
+            export IMAGE_NAME="$deploy_image_name"
+            export IMAGE_TAG="$deploy_image_tag"
+            : "${IMAGE_NAME:?IMAGE_NAME is missing}"
+            : "${IMAGE_TAG:?IMAGE_TAG is missing}"
             printf "%s" "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
             export IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
             docker pull "$IMAGE"
-            docker stack deploy --with-registry-auth --prune --resolve-image always --compose-file docker-compose.yml "$STACK_NAME"
+            docker stack deploy --with-registry-auth --prune --resolve-image always --detach=false --compose-file docker-compose.yml "$STACK_NAME"
             version="${IMAGE_TAG#v}"
             major="${version%%.*}"
             if [[ "$version" == "$major" ]]; then
