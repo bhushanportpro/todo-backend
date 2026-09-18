@@ -11,6 +11,7 @@ on:
 
 env:
   IMAGE_NAME: bhushanportpro/todo-app-backend
+  DEPLOYMENT_REPOSITORY: https://github.com/bhushanportpro/todo-deployment.git
 
 jobs:
   rollback:
@@ -64,6 +65,7 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: ${{ steps.version.outputs.image_tag }}
+          DEPLOYMENT_REPOSITORY: ${{ env.DEPLOYMENT_REPOSITORY }}
           DEPLOY_PATH: /home/${{ secrets.EC2_USER }}/todo-backend
           STACK_NAME: todo-backend
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -72,17 +74,21 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: IMAGE_NAME,IMAGE_TAG,DEPLOY_PATH,STACK_NAME,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
+          envs: IMAGE_NAME,IMAGE_TAG,DEPLOYMENT_REPOSITORY,DEPLOY_PATH,STACK_NAME,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
           timeout: 120s
           command_timeout: 10m
           script: |
             set -euo pipefail
             mkdir -p "$DEPLOY_PATH"
             cd "$DEPLOY_PATH"
-            if [[ ! -f docker-compose.yml ]]; then
-              echo "docker-compose.yml was not found in $DEPLOY_PATH"
+            deployment_dir="$(mktemp -d)"
+            trap 'rm -rf "$deployment_dir"' EXIT
+            git clone --depth 1 "$DEPLOYMENT_REPOSITORY" "$deployment_dir"
+            if [[ ! -f "$deployment_dir/docker-compose.yml" ]]; then
+              echo "docker-compose.yml was not found in $DEPLOYMENT_REPOSITORY"
               exit 1
             fi
+            cp "$deployment_dir/docker-compose.yml" "$DEPLOY_PATH/docker-compose.yml"
             deploy_image_name="$IMAGE_NAME"
             deploy_image_tag="$IMAGE_TAG"
             if [[ -f .env ]]; then
