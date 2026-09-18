@@ -1,0 +1,21 @@
+services:
+  backend:
+    image: ${IMAGE_NAME}:${IMAGE_TAG}
+    deploy:
+      restart_policy:
+        condition: any
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+          pids: 256
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
