@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       current_image_tag:
-        description: Currently deployed image tag, for example v5.6
+        description: Currently deployed SemVer image tag, for example v1.2.3
         required: true
         type: string
-        default: v1.0
+        default: v1.0.0
 
 env:
   IMAGE_NAME: bhushanportpro/todo-app-backend
@@ -25,8 +25,8 @@ jobs:
           CURRENT_IMAGE_TAG: ${{ inputs.current_image_tag }}
         run: |
           set -euo pipefail
-          if [[ ! "$CURRENT_IMAGE_TAG" =~ ^v[0-9]+([.][0-9]+)?$ ]]; then
-            echo "current_image_tag must match vN or vN.M"
+          if [[ ! "$CURRENT_IMAGE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "current_image_tag must match vMAJOR.MINOR.PATCH"
             exit 1
           fi
 
@@ -39,24 +39,14 @@ jobs:
           set -euo pipefail
           version="${CURRENT_IMAGE_TAG#v}"
           major="${version%%.*}"
-          if [[ "$version" == "$major" ]]; then
-            if (( major <= 1 )); then
-              echo "There is no previous release for $CURRENT_IMAGE_TAG"
-              exit 1
-            fi
-            previous_tag="v$((major - 1)).9"
-          else
-            minor="${version#*.}"
-            if (( minor == 0 )); then
-              if (( major <= 1 )); then
-                echo "There is no previous release for $CURRENT_IMAGE_TAG"
-                exit 1
-              fi
-              previous_tag="v$((major - 1)).9"
-            else
-              previous_tag="v${major}.$((minor - 1))"
-            fi
+          remainder="${version#*.}"
+          minor="${remainder%%.*}"
+          patch="${remainder#*.}"
+          if (( patch == 0 )); then
+            echo "There is no previous patch release for $CURRENT_IMAGE_TAG"
+            exit 1
           fi
+          previous_tag="v${major}.${minor}.$((patch - 1))"
           echo "image_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
           echo "$CURRENT_IMAGE_TAG will roll back to $previous_tag"
 
@@ -106,19 +96,17 @@ jobs:
             docker stack deploy --with-registry-auth --prune --resolve-image always --detach=false --compose-file docker-compose.yml "$STACK_NAME"
             version="${IMAGE_TAG#v}"
             major="${version%%.*}"
-            if [[ "$version" == "$major" ]]; then
-              previous_tag="v$((major - 1)).9"
+            remainder="${version#*.}"
+            minor="${remainder%%.*}"
+            patch="${remainder#*.}"
+            if (( patch > 0 )); then
+              previous_tag="v${major}.${minor}.$((patch - 1))"
             else
-              minor="${version#*.}"
-              if (( minor == 0 )); then
-                previous_tag="v$((major - 1)).9"
-              else
-                previous_tag="v${major}.$((minor - 1))"
-              fi
+              previous_tag="$IMAGE_TAG"
             fi
             while IFS= read -r image; do
               tag="${image#${IMAGE_NAME}:}"
-              if [[ "$tag" =~ ^v[0-9]+([.][0-9]+)?$ && "$tag" != "$IMAGE_TAG" && "$tag" != "$previous_tag" ]]; then
+              if [[ "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ && "$tag" != "$IMAGE_TAG" && "$tag" != "$previous_tag" ]]; then
                 echo "Removing old image $image"
                 docker image rm --force "$image"
               fi
