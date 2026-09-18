@@ -6,9 +6,12 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: todo-backend-release
+  cancel-in-progress: false
+
 env:
   IMAGE_NAME: bhushanportpro/todo-app-backend
-  IMAGE_TAG: v${{ github.run_number }}
 
 jobs:
   test:
@@ -36,6 +39,9 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
 
+    outputs:
+      image_tag: ${{ steps.version.outputs.image_tag }}
+
     permissions:
       contents: read
 
@@ -52,13 +58,49 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Determine image version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_tag="$({
+            curl --fail --silent --show-error --retry 3 \
+              "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/tags?page_size=100&ordering=last_updated" \
+              | node -e '
+                  let input = "";
+                  process.stdin.on("data", chunk => input += chunk);
+                  process.stdin.on("end", () => {
+                    const tags = JSON.parse(input).results
+                      .map(tag => tag.name)
+                      .map(tag => /^v(\\d+)(?:\\.(\\d+))?$/.exec(tag))
+                      .filter(Boolean)
+                      .map(match => ({ major: Number(match[1]), minor: match[2] === undefined ? null : Number(match[2]) }))
+                      .sort((a, b) => b.major - a.major || (b.minor ?? -1) - (a.minor ?? -1));
+                    if (tags.length === 0) {
+                      process.stdout.write("v1.0");
+                      return;
+                    }
+                    const current = tags[0];
+                    if (current.minor === null) {
+                      process.stdout.write(`v${current.major}.1`);
+                    } else if (current.minor < 9) {
+                      process.stdout.write(`v${current.major}.${current.minor + 1}`);
+                    } else {
+                      process.stdout.write(`v${current.major + 1}`);
+                    }
+                  });
+                '
+          })"
+          echo "image_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE_NAME}:${latest_tag}"
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.image_tag }}
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -74,7 +116,7 @@ jobs:
         uses: appleboy/ssh-action@v1
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
           DEPLOY_PATH: /home/${{ secrets.EC2_USER }}/todo-backend
           STACK_NAME: todo-backend
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -88,13 +130,10 @@ jobs:
           command_timeout: 10m
           script: |
             set -euo pipefail
-            sudo -u docker bash -c '
-              set -euo pipefail
-              mkdir -p "'"$DEPLOY_PATH"'"
-              cd "'"$DEPLOY_PATH"'"
-              printf "%s" "'"$DOCKERHUB_TOKEN"'" | docker login --username "'"$DOCKERHUB_USERNAME"'" --password-stdin
-              export IMAGE="'"$IMAGE_NAME:$IMAGE_TAG"'"
-              docker pull "$IMAGE"
-              docker stack deploy --with-registry-auth --prune --resolve-image always --compose-file docker-compose.yml "'"$STACK_NAME"'"
-              docker logout
-            '
+            mkdir -p "$DEPLOY_PATH"
+            cd "$DEPLOY_PATH"
+            printf "%s" "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+            export IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+            docker pull "$IMAGE"
+            docker stack deploy --with-registry-auth --prune --resolve-image always --compose-file docker-compose.yml "$STACK_NAME"
+            docker logout
