@@ -12,7 +12,8 @@ concurrency:
 
 env:
   IMAGE_NAME: bhushanportpro/todo-app-backend
-  DEPLOYMENT_REPOSITORY: https://github.com/bhushanportpro/todo-deployment.git
+  IMAGE_TAG: v${{ github.run_number }}
+  SERVICE_NAME: todo-backend_backend
 
 jobs:
   test:
@@ -20,69 +21,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Get the code
+        run: |
+          git clone "https://github.com/${GITHUB_REPOSITORY}.git" .
+          git checkout "$GITHUB_SHA"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
+      - name: Install dependencies and run tests
+        run: docker run --rm -v "$PWD":/app -w /app node:24 sh -c "npm ci && npm test"
 
   build-and-push:
     name: Build and push image
     needs: test
     runs-on: ubuntu-latest
 
-    outputs:
-      image_tag: ${{ steps.version.outputs.image_tag }}
-
-    permissions:
-      contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Get the code
+        run: |
+          git clone "https://github.com/${GITHUB_REPOSITORY}.git" .
+          git checkout "$GITHUB_SHA"
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: docker build -t "$IMAGE_NAME:$IMAGE_TAG" -t "$IMAGE_NAME:latest" .
 
-      - name: Determine image version
-        id: version
-        shell: bash
+      - name: Push image
         run: |
-          set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "package.json version must be MAJOR.MINOR.PATCH, got: $version"
-            exit 1
-          fi
-          image_tag="v${version}"
-          echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
-          echo "Building ${IMAGE_NAME}:${image_tag}"
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.image_tag }}
-            ${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          docker push "$IMAGE_NAME:$IMAGE_TAG"
+          docker push "$IMAGE_NAME:latest"
 
   release:
     name: Create GitHub release
@@ -104,70 +74,31 @@ jobs:
 
   deploy:
     name: Deploy to EC2
-    needs: [build-and-push, release]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build-and-push
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Pull image and deploy stack on EC2
-        uses: appleboy/ssh-action@v1
+      - name: Update service on EC2
         env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
-          DEPLOYMENT_REPOSITORY: ${{ env.DEPLOYMENT_REPOSITORY }}
-          DEPLOY_PATH: /home/${{ secrets.EC2_USER }}/todo-backend
-          STACK_NAME: todo-backend
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          envs: IMAGE_NAME,IMAGE_TAG,DEPLOYMENT_REPOSITORY,DEPLOY_PATH,STACK_NAME,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
-          timeout: 120s
-          command_timeout: 10m
-          script: |
-            set -euo pipefail
-            mkdir -p "$DEPLOY_PATH"
-            cd "$DEPLOY_PATH"
-            deployment_dir="$(mktemp -d)"
-            trap 'rm -rf "$deployment_dir"' EXIT
-            git clone --depth 1 "$DEPLOYMENT_REPOSITORY" "$deployment_dir"
-            if [[ ! -f "$deployment_dir/docker-compose.yml" ]]; then
-              echo "docker-compose.yml was not found in $DEPLOYMENT_REPOSITORY"
-              exit 1
-            fi
-            cp "$deployment_dir/docker-compose.yml" "$DEPLOY_PATH/docker-compose.yml"
-            deploy_image_name="$IMAGE_NAME"
-            deploy_image_tag="$IMAGE_TAG"
-            if [[ -f .env ]]; then
-              set -a
-              . ./.env
-              set +a
-            fi
-            export IMAGE_NAME="$deploy_image_name"
-            export IMAGE_TAG="$deploy_image_tag"
-            : "${IMAGE_NAME:?IMAGE_NAME is missing}"
-            : "${IMAGE_TAG:?IMAGE_TAG is missing}"
-            printf "%s" "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
-            export IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
-            docker pull "$IMAGE"
-            docker stack deploy --with-registry-auth --prune --resolve-image always --detach=false --compose-file docker-compose.yml "$STACK_NAME"
-            version="${IMAGE_TAG#v}"
-            major="${version%%.*}"
-            remainder="${version#*.}"
-            minor="${remainder%%.*}"
-            patch="${remainder#*.}"
-            if (( patch > 0 )); then
-              previous_tag="v${major}.${minor}.$((patch - 1))"
-            else
-              previous_tag="$IMAGE_TAG"
-            fi
-            while IFS= read -r image; do
-              tag="${image#${IMAGE_NAME}:}"
-              if [[ "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ && "$tag" != "$IMAGE_TAG" && "$tag" != "$previous_tag" ]]; then
-                echo "Removing old image $image"
-                docker image rm --force "$image"
-              fi
-            done < <(docker image ls "$IMAGE_NAME" --format '{{.Repository}}:{{.Tag}}')
-            docker logout
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" bash -s <<EOF
+          set -e
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          docker image prune -af
+          docker pull "$IMAGE_NAME:latest"
+          docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$IMAGE_TAG"
+          docker service update --with-registry-auth --image "$IMAGE_NAME:latest" "$SERVICE_NAME"
+          docker logout
+          docker service ls
+          EOF

@@ -3,26 +3,24 @@ name: Rollback
 on:
   workflow_dispatch:
     inputs:
-      current_image_tag:
-        description: Currently deployed SemVer image tag, for example v1.2.3
+      image_tag:
+        description: Version to go back to
         required: true
         type: string
-        default: v1.0.0
 
 env:
   IMAGE_NAME: bhushanportpro/todo-app-backend
-  DEPLOYMENT_REPOSITORY: https://github.com/bhushanportpro/todo-deployment.git
+  SERVICE_NAME: todo-backend_backend
 
 jobs:
   rollback:
-    name: Deploy selected image
+    name: Rollback on EC2
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate image tag
-        shell: bash
+      - name: Check the tag
         env:
-          CURRENT_IMAGE_TAG: ${{ inputs.current_image_tag }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
           if [[ ! "$CURRENT_IMAGE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
@@ -30,85 +28,30 @@ jobs:
             exit 1
           fi
 
-      - name: Determine previous image version
-        id: version
-        shell: bash
+      - name: Update service on EC2
         env:
-          CURRENT_IMAGE_TAG: ${{ inputs.current_image_tag }}
-        run: |
-          set -euo pipefail
-          version="${CURRENT_IMAGE_TAG#v}"
-          major="${version%%.*}"
-          remainder="${version#*.}"
-          minor="${remainder%%.*}"
-          patch="${remainder#*.}"
-          if (( patch == 0 )); then
-            echo "There is no previous patch release for $CURRENT_IMAGE_TAG"
-            exit 1
-          fi
-          previous_tag="v${major}.${minor}.$((patch - 1))"
-          echo "image_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
-          echo "$CURRENT_IMAGE_TAG will roll back to $previous_tag"
-
-      - name: Pull image and deploy stack on EC2
-        uses: appleboy/ssh-action@v1
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          IMAGE_TAG: ${{ steps.version.outputs.image_tag }}
-          DEPLOYMENT_REPOSITORY: ${{ env.DEPLOYMENT_REPOSITORY }}
-          DEPLOY_PATH: /home/${{ secrets.EC2_USER }}/todo-backend
-          STACK_NAME: todo-backend
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          envs: IMAGE_NAME,IMAGE_TAG,DEPLOYMENT_REPOSITORY,DEPLOY_PATH,STACK_NAME,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
-          timeout: 120s
-          command_timeout: 10m
-          script: |
-            set -euo pipefail
-            mkdir -p "$DEPLOY_PATH"
-            cd "$DEPLOY_PATH"
-            deployment_dir="$(mktemp -d)"
-            trap 'rm -rf "$deployment_dir"' EXIT
-            git clone --depth 1 "$DEPLOYMENT_REPOSITORY" "$deployment_dir"
-            if [[ ! -f "$deployment_dir/docker-compose.yml" ]]; then
-              echo "docker-compose.yml was not found in $DEPLOYMENT_REPOSITORY"
-              exit 1
-            fi
-            cp "$deployment_dir/docker-compose.yml" "$DEPLOY_PATH/docker-compose.yml"
-            deploy_image_name="$IMAGE_NAME"
-            deploy_image_tag="$IMAGE_TAG"
-            if [[ -f .env ]]; then
-              set -a
-              . ./.env
-              set +a
-            fi
-            export IMAGE_NAME="$deploy_image_name"
-            export IMAGE_TAG="$deploy_image_tag"
-            : "${IMAGE_NAME:?IMAGE_NAME is missing}"
-            : "${IMAGE_TAG:?IMAGE_TAG is missing}"
-            printf "%s" "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
-            export IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
-            docker pull "$IMAGE"
-            docker stack deploy --with-registry-auth --prune --resolve-image always --detach=false --compose-file docker-compose.yml "$STACK_NAME"
-            version="${IMAGE_TAG#v}"
-            major="${version%%.*}"
-            remainder="${version#*.}"
-            minor="${remainder%%.*}"
-            patch="${remainder#*.}"
-            if (( patch > 0 )); then
-              previous_tag="v${major}.${minor}.$((patch - 1))"
-            else
-              previous_tag="$IMAGE_TAG"
-            fi
-            while IFS= read -r image; do
-              tag="${image#${IMAGE_NAME}:}"
-              if [[ "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ && "$tag" != "$IMAGE_TAG" && "$tag" != "$previous_tag" ]]; then
-                echo "Removing old image $image"
-                docker image rm --force "$image"
-              fi
-            done < <(docker image ls "$IMAGE_NAME" --format '{{.Repository}}:{{.Tag}}')
-            docker logout
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" bash -s <<EOF
+          set -e
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          if docker image inspect "$IMAGE_NAME:$IMAGE_TAG" > /dev/null 2>&1; then
+            echo "Using the image already on EC2"
+          else
+            echo "Image is not on EC2, pulling it from Docker Hub"
+            docker pull "$IMAGE_NAME:$IMAGE_TAG"
+          fi
+          docker service update --with-registry-auth --image "$IMAGE_NAME:$IMAGE_TAG" "$SERVICE_NAME"
+          docker logout
+          docker service ls
+          EOF
