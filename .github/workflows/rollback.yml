@@ -2,14 +2,8 @@ name: Rollback
 
 on:
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: Version to go back to (example v1.2.3)
-        required: true
-        type: string
 
 env:
-  IMAGE_NAME: bhushanportpro/todo-app-backend
   SERVICE_NAME: todo-backend_backend
 
 jobs:
@@ -18,24 +12,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check the tag
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$CURRENT_IMAGE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
-            echo "current_image_tag must match vMAJOR.MINOR.PATCH"
-            exit 1
-          fi
-
-      - name: Update service on EC2 (one SSH connection)
+      - name: Rollback to the previous image on EC2
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          IMAGE_TAG: ${{ inputs.image_tag }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           # Save the SSH key in a file and lock it
           mkdir -p ~/.ssh
@@ -46,14 +27,12 @@ jobs:
           # ONE connection: everything between <<EOF and EOF runs on the EC2 server.
           ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" bash -s <<EOF
           set -e
-          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-          if docker image inspect "$IMAGE_NAME:$IMAGE_TAG" > /dev/null 2>&1; then
-            echo "Using the image already on EC2"
-          else
-            echo "Image is not on EC2, pulling it from Docker Hub"
-            docker pull "$IMAGE_NAME:$IMAGE_TAG"
-          fi
-          docker service update --with-registry-auth --image "$IMAGE_NAME:$IMAGE_TAG" "$SERVICE_NAME"
-          docker logout
+          echo "Image before rollback:"
+          docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$SERVICE_NAME"
+
+          docker service rollback "$SERVICE_NAME"
+
+          echo "Image after rollback:"
+          docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$SERVICE_NAME"
           docker service ls
           EOF
