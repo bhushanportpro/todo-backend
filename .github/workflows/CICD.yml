@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -103,24 +102,6 @@ jobs:
         run: |
           docker push "$IMAGE_NAME:$IMAGE_TAG"
           docker push "$IMAGE_NAME:latest"
-
-  release:
-    name: Create GitHub release
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Create GitHub release and tag
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.build-and-push.outputs.image_tag }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
 
   deploy:
     name: Deploy to EC2
