@@ -6,24 +6,70 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: todo-backend-release
   cancel-in-progress: false
 
 env:
   IMAGE_NAME: bhushanportpro/todo-app-backend
-  IMAGE_TAG: v${{ github.run_number }}
   SERVICE_NAME: todo-backend_backend
 
 jobs:
+  version:
+    name: Read version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.read.outputs.tag }}
+
+    steps:
+      - name: Get the code
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
+          git checkout "$GITHUB_SHA"
+
+      - name: Read version from package.json
+        id: read
+        run: |
+          set -euo pipefail
+
+          # Take the "version" field from package.json, for example 1.2.3
+          VERSION=$(jq -r .version package.json)
+
+          # It must look like MAJOR.MINOR.PATCH
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version in package.json must look like 1.2.3 but it is: $VERSION"
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          echo "Version is $VERSION, so the tag is $TAG"
+
+          # If this tag is already on GitHub, this version was released before.
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]; then
+            echo "Tag $TAG already exists."
+            echo "Change the version in package.json (for example to a higher number) and push again."
+            exit 1
+          fi
+
+          # Save the tag so the other jobs can use it
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
+    needs: version
     runs-on: ubuntu-latest
 
     steps:
       - name: Get the code
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone "https://github.com/${GITHUB_REPOSITORY}.git" .
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
           git checkout "$GITHUB_SHA"
 
       - name: Install dependencies and run tests
@@ -31,13 +77,17 @@ jobs:
 
   build-and-push:
     name: Build and push image
-    needs: test
+    needs: [version, test]
     runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ needs.version.outputs.tag }}
 
     steps:
       - name: Get the code
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone "https://github.com/${GITHUB_REPOSITORY}.git" .
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
           git checkout "$GITHUB_SHA"
 
       - name: Log in to Docker Hub
@@ -74,12 +124,13 @@ jobs:
 
   deploy:
     name: Deploy to EC2
-    needs: build-and-push
-    if: github.event_name == 'push'
+    needs: [version, build-and-push]
     runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ needs.version.outputs.tag }}
 
     steps:
-      - name: Update service on EC2
+      - name: Update service on EC2 (one SSH connection)
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
@@ -87,18 +138,34 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
+          # Save the SSH key in a file and lock it (ssh refuses keys that anyone can read)
           mkdir -p ~/.ssh
           echo "$EC2_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
+          # ONE connection: every command between <<EOF and EOF runs on the EC2 server.
+          # No files need to be sent, because the server pulls the image from Docker Hub.
+          # The variables (like $IMAGE_TAG) are filled in here on GitHub, then the finished
+          # commands are sent to the server.
           ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" bash -s <<EOF
           set -e
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
           docker image prune -af
-          docker pull "$IMAGE_NAME:latest"
-          docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$IMAGE_TAG"
-          docker service update --with-registry-auth --image "$IMAGE_NAME:latest" "$SERVICE_NAME"
+          docker pull "$IMAGE_NAME:$IMAGE_TAG"
+          docker service update --with-registry-auth --image "$IMAGE_NAME:$IMAGE_TAG" "$SERVICE_NAME"
           docker logout
           docker service ls
           EOF
+
+  release:
+    name: Create tag and release
+    needs: [version, deploy]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
