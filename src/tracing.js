@@ -10,7 +10,7 @@ const sdk = new NodeSDK({
     [ATTR_SERVICE_NAME]: 'todo-backend',
   }),
   traceExporter: new OTLPTraceExporter({
-    url: 'http://localhost:4318/v1/traces',
+    url: 'http://todo-backend_tempo:4318/v1/traces',
   }),
   instrumentations: [getNodeAutoInstrumentations()],
 });
