@@ -1,7 +1,6 @@
-```json
 {
   "name": "todo-backend",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Express + PostgreSQL API for the Todo app",
   "main": "src/server.js",
   "scripts": {
@@ -29,4 +28,3 @@
     "node": ">=18"
   }
 }
-```
