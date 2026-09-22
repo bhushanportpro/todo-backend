@@ -1,10 +1,11 @@
+```json
 {
   "name": "todo-backend",
   "version": "1.0.4",
   "description": "Express + PostgreSQL API for the Todo app",
   "main": "src/server.js",
   "scripts": {
-    "start": "node -r ./tracing.js server.js",
+    "start": "node --import ./tracing.js src/server.js",
     "dev": "nodemon src/server.js",
     "migrate": "node src/migrate.js",
     "test": "node --check src/server.js && node --check src/db.js && node --check src/migrate.js && node --check src/controllers/todos.controller.js && node --check src/routes/todos.routes.js"
@@ -28,3 +29,4 @@
     "node": ">=18"
   }
 }
+```
