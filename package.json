@@ -1,15 +1,20 @@
 {
   "name": "todo-backend",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Express + PostgreSQL API for the Todo app",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node -r ./tracing.js server.js",
     "dev": "nodemon src/server.js",
     "migrate": "node src/migrate.js",
     "test": "node --check src/server.js && node --check src/db.js && node --check src/migrate.js && node --check src/controllers/todos.controller.js && node --check src/routes/todos.routes.js"
   },
   "dependencies": {
+    "@opentelemetry/auto-instrumentations-node": "^0.80.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "helmet": "^7.1.0",
